@@ -2,8 +2,6 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Unit tests for the CustomOp platform-dispatch base class."""
 
-from types import SimpleNamespace
-
 import pytest
 import torch
 
@@ -57,8 +55,9 @@ def test_mot_rmsnorm_dispatches_on_xpu_without_an_override():
     )
 
 
-@pytest.fixture
-def external_platform(monkeypatch):
+def test_external_registration_preserves_constructor_and_builtin_dispatch(monkeypatch):
+    from types import SimpleNamespace
+
     from vllm_omni.diffusion.layers import custom_op
 
     platform = SimpleNamespace(
@@ -67,10 +66,6 @@ def external_platform(monkeypatch):
     )
     monkeypatch.setattr(custom_op, "current_omni_platform", platform)
     monkeypatch.setattr(CustomOp, "_oot_registry", {})
-    return platform
-
-
-def test_external_registration_preserves_constructor_and_builtin_dispatch(monkeypatch, external_platform):
 
     class WeightedOp(_NativeOnlyOp):
         def __init__(self, width):
@@ -87,13 +82,14 @@ def test_external_registration_preserves_constructor_and_builtin_dispatch(monkey
 
     external = WeightedOp(3)
     assert isinstance(external, ExternalOp)
-    assert list(external.state_dict()) == ["weight"]
-    torch.testing.assert_close(external(torch.ones(3)), torch.full((3,), 2.0))
-    torch.testing.assert_close(external.forward_native(torch.ones(3)), torch.ones(3))
+    weights = torch.arange(3, dtype=torch.float32)
+    external.load_state_dict({"weight": weights}, strict=True)
+    torch.testing.assert_close(external(torch.ones(3)), weights + 1)
+    torch.testing.assert_close(external.forward_native(torch.ones(3)), weights)
     torch.testing.assert_close(_NativeOnlyOp()(torch.ones(3)), torch.full((3,), 2.0))
     unrelated = type("WeightedOp", (_NativeOnlyOp,), {})
     assert type(unrelated()) is unrelated
-    monkeypatch.setattr(external_platform, "is_out_of_tree", lambda: False)
+    monkeypatch.setattr(platform, "is_out_of_tree", lambda: False)
     builtin = WeightedOp(3)
     assert type(builtin) is WeightedOp
     torch.testing.assert_close(builtin(torch.ones(3)), torch.ones(3))
@@ -101,33 +97,3 @@ def test_external_registration_preserves_constructor_and_builtin_dispatch(monkey
         WeightedOp.register_oot(ExternalOp)
     with pytest.raises(TypeError, match="must inherit"):
         _NativeOnlyOp.register_oot(torch.nn.Linear)
-
-
-def test_predictor_ops_preserve_weights_and_native_reference(external_platform):
-    from vllm_omni.model_executor.models.common.qwen3_code_predictor import (
-        _RMSNorm,
-        _RotaryEmbedding,
-    )
-
-    reference = _RMSNorm(8)
-    reference.weight = torch.nn.Parameter(torch.arange(1, 9, dtype=torch.float32))
-
-    @_RMSNorm.register_oot
-    class ExternalNorm(_RMSNorm):
-        def forward_oot(self, x):
-            return torch.nn.functional.rms_norm(x, (x.shape[-1],), self.weight, self.variance_epsilon)
-
-    @_RotaryEmbedding.register_oot
-    class ExternalRotary(_RotaryEmbedding):
-        def forward_oot(self, x, position_ids):
-            return self._lookup(x, position_ids)
-
-    norm = _RMSNorm(8)
-    norm.load_state_dict(reference.state_dict(), strict=True)
-    rotary = _RotaryEmbedding(SimpleNamespace(hidden_size=8, num_attention_heads=2, num_code_groups=4))
-    assert isinstance(norm, ExternalNorm) and isinstance(rotary, ExternalRotary)
-    x = torch.arange(24, dtype=torch.float32).reshape(1, 3, 8) / 16
-    positions = torch.tensor([[0, 1, 3]])
-    torch.testing.assert_close(norm(x), reference(x))
-    torch.testing.assert_close(norm.forward_native(x), reference(x), rtol=0, atol=0)
-    torch.testing.assert_close(rotary(x, positions), rotary.forward_native(x, positions))

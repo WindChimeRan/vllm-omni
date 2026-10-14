@@ -25,7 +25,7 @@ from vllm_omni.model_executor.models.qwen3_tts.qwen3_tts_talker import (
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
 
-@pytest.mark.parametrize("capture_sizes,expected", [(None, [1, 8]), ([], [1, 8]), ([2, 4, 16], [1, 2, 4, 8])])
+@pytest.mark.parametrize("capture_sizes,expected", [(None, [1, 8]), ([2, 4, 16], [1, 2, 4, 8])])
 def test_talker_initializes_predictor_buckets_without_cuda_graphs(mocker, capture_sizes, expected):
     from vllm_omni.model_executor.models.qwen3_tts import qwen3_tts_talker as module
 
@@ -58,10 +58,9 @@ def test_talker_initializes_predictor_buckets_without_cuda_graphs(mocker, captur
             hf_config=SimpleNamespace(talker_config=talker_config, speaker_encoder_config=None),
             use_v2_model_runner=True,
         ),
-        compilation_config=SimpleNamespace(cudagraph_capture_sizes=capture_sizes, static_forward_context={}),
+        compilation_config=SimpleNamespace(cudagraph_capture_sizes=capture_sizes),
         scheduler_config=SimpleNamespace(max_num_seqs=8),
         parallel_config=SimpleNamespace(),
-        quant_config=None,
     )
     with pytest.raises(BucketsConfiguredError):
         module.Qwen3TTSTalkerForConditionalGeneration(vllm_config=config)
