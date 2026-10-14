@@ -32,6 +32,10 @@ last_reviewed: 2026-07-16
 Execution platforms isolate hardware-specific capability detection, worker
 selection, patches, kernels, and configuration adjustments.
 
+External platforms use `Operator.register_oot(Implementation)` before model
+construction and implement `forward_oot`. Overrides preserve the operator's
+constructor, parameters, and outputs; `forward_native` is the default fallback.
+
 ## Candidate invariants
 
 ### PLATFORM-INV-001: Capabilities are explicit
@@ -53,17 +57,3 @@ from the common or upstream implementation.
 
 Validate common import paths without the target accelerator and run focused
 tests in a fresh `uv` environment on every affected device platform.
-
-## External operators
-
-Register an operator subclass with `Operator.register_oot(Implementation)` before
-model construction. Override `forward_oot`; `forward_native` remains the reference
-and the default fallback. Preserve the operator's constructor, parameters, and
-output contract. Registration is keyed by class identity, rejects duplicates,
-and applies only to external platforms; built-in dispatch is unchanged.
-
-Qwen3 predictors expose `CodePredictorRMSNorm` and
-`CodePredictorRotaryEmbedding` from
-`vllm_omni.model_executor.models.common.qwen3_code_predictor`.
-The rotary operator's `lookup_cos_sin(x, position_ids)` returns cached tables
-in `x.dtype`, shaped `[batch, seq_len, head_dim]`.
