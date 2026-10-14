@@ -103,28 +103,28 @@ def test_external_registration_preserves_constructor_and_builtin_dispatch(monkey
         _NativeOnlyOp.register_oot(torch.nn.Linear)
 
 
-def test_public_predictor_ops_preserve_weights_and_native_reference(external_platform):
+def test_predictor_ops_preserve_weights_and_native_reference(external_platform):
     from vllm_omni.model_executor.models.common.qwen3_code_predictor import (
-        CodePredictorRMSNorm,
-        CodePredictorRotaryEmbedding,
+        _RMSNorm,
+        _RotaryEmbedding,
     )
 
-    reference = CodePredictorRMSNorm(8)
+    reference = _RMSNorm(8)
     reference.weight = torch.nn.Parameter(torch.arange(1, 9, dtype=torch.float32))
 
-    @CodePredictorRMSNorm.register_oot
-    class ExternalNorm(CodePredictorRMSNorm):
+    @_RMSNorm.register_oot
+    class ExternalNorm(_RMSNorm):
         def forward_oot(self, x):
             return torch.nn.functional.rms_norm(x, (x.shape[-1],), self.weight, self.variance_epsilon)
 
-    @CodePredictorRotaryEmbedding.register_oot
-    class ExternalRotary(CodePredictorRotaryEmbedding):
+    @_RotaryEmbedding.register_oot
+    class ExternalRotary(_RotaryEmbedding):
         def forward_oot(self, x, position_ids):
-            return self.lookup_cos_sin(x, position_ids)
+            return self._lookup(x, position_ids)
 
-    norm = CodePredictorRMSNorm(8)
+    norm = _RMSNorm(8)
     norm.load_state_dict(reference.state_dict(), strict=True)
-    rotary = CodePredictorRotaryEmbedding(SimpleNamespace(hidden_size=8, num_attention_heads=2, num_code_groups=4))
+    rotary = _RotaryEmbedding(SimpleNamespace(hidden_size=8, num_attention_heads=2, num_code_groups=4))
     assert isinstance(norm, ExternalNorm) and isinstance(rotary, ExternalRotary)
     x = torch.arange(24, dtype=torch.float32).reshape(1, 3, 8) / 16
     positions = torch.tensor([[0, 1, 3]])
