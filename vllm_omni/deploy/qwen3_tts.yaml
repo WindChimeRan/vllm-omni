@@ -141,6 +141,28 @@ stages:
       repetition_penalty: 1.0
 
 platforms:
+  mps:
+    stages:
+      - stage_id: 0
+        dtype: bfloat16
+        enforce_eager: true
+        async_scheduling: false
+        max_num_seqs: 8
+        kv_cache_memory_bytes: 536870912
+        additional_config:
+          code_predictor_kv_cache: eager
+        default_sampling_params:
+          temperature: 0.0
+          top_k: -1
+          top_p: 1.0
+          min_tokens: 0
+          repetition_penalty: 1.5
+        subtalker_sampling_params:
+          do_sample: false
+      - stage_id: 1
+        enforce_eager: true
+        async_scheduling: false
+        max_num_seqs: 8
   rocm:
     # MRV2 is not qualified on ROCm; keep the legacy V1 runner.
     model_runner: v1
