@@ -57,8 +57,12 @@ if current_omni_platform.is_npu():
 # See: https://github.com/vllm-project/vllm-omni/issues/2274
 
 
-class _RMSNorm(CustomOp):
-    """RMSNorm with HuggingFace-compatible CPU/CUDA math and an NPU fast path."""
+class CodePredictorRMSNorm(CustomOp):
+    """Predictor RMSNorm; external backends override ``forward_oot``.
+
+    Preserve the constructor and ``weight`` parameter of shape ``[hidden_size]``.
+    ``forward_native`` remains the HuggingFace-compatible reference.
+    """
 
     def __init__(self, hidden_size: int, eps: float = 1e-6) -> None:
         super().__init__()
@@ -91,8 +95,12 @@ def _rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
-class _RotaryEmbedding(CustomOp):
-    """RoPE with cached cos/sin tables; ``forward_native`` keeps the HF on-the-fly math."""
+class CodePredictorRotaryEmbedding(CustomOp):
+    """Predictor RoPE; external backends override ``forward_oot``.
+
+    Return ``(cos, sin)`` for the supplied positions in the input tensor's dtype.
+    ``lookup_cos_sin`` exposes the cache; ``forward_native`` remains the reference.
+    """
 
     def __init__(self, config) -> None:
         super().__init__()
@@ -119,20 +127,20 @@ class _RotaryEmbedding(CustomOp):
         self.register_buffer("cos_cached", emb.cos(), persistent=False)
         self.register_buffer("sin_cached", emb.sin(), persistent=False)
 
-    def _lookup(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        # position_ids: [batch, seq_len] -> cos/sin: [batch, seq_len, head_dim]
+    def lookup_cos_sin(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return cached cos/sin shaped ``[batch, seq_len, head_dim]`` in ``x.dtype``."""
         cos = self.cos_cached[position_ids]
         sin = self.sin_cached[position_ids]
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
     def forward_npu(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._lookup(x, position_ids)
+        return self.lookup_cos_sin(x, position_ids)
 
     def forward_cuda(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._lookup(x, position_ids)
+        return self.lookup_cos_sin(x, position_ids)
 
     def forward_xpu(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._lookup(x, position_ids)
+        return self.lookup_cos_sin(x, position_ids)
 
     def forward_native(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # HuggingFace on-the-fly computation, kept as a numeric reference.
@@ -200,8 +208,8 @@ class CodePredictorAttention(nn.Module):
             bias=bias,
         )
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
-        self.q_norm = _RMSNorm(self.head_dim, eps=config.rms_norm_eps)
-        self.k_norm = _RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.q_norm = CodePredictorRMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.k_norm = CodePredictorRMSNorm(self.head_dim, eps=config.rms_norm_eps)
         if current_omni_platform.is_npu():
             if self.max_seq > 2048:
                 raise ValueError(
@@ -405,8 +413,8 @@ class CodePredictorDecoderLayer(nn.Module):
         super().__init__()
         self.self_attn = CodePredictorAttention(config, prefix=f"{prefix}.self_attn")
         self.mlp = CodePredictorMLP(config, prefix=f"{prefix}.mlp")
-        self.input_layernorm = _RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = _RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = CodePredictorRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = CodePredictorRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -490,8 +498,8 @@ class CodePredictorBaseModel(nn.Module):
                 for idx in range(config.num_hidden_layers)
             ]
         )
-        self.norm = _RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.rotary_emb = _RotaryEmbedding(config)
+        self.norm = CodePredictorRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.rotary_emb = CodePredictorRotaryEmbedding(config)
 
     def get_input_embeddings(self) -> nn.ModuleList:
         return self.codec_embedding

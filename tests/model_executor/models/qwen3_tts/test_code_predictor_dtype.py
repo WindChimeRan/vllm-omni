@@ -200,12 +200,12 @@ def test_npu_custom_ops_use_fused_norm_and_cached_rope(mocker: MockerFixture, lo
     )
 
     hidden_states = torch.zeros(1, 2, cp_config.hidden_size, dtype=torch.float16)
-    norm = common_mod._RMSNorm(cp_config.hidden_size, eps=cp_config.rms_norm_eps)
+    norm = common_mod.CodePredictorRMSNorm(cp_config.hidden_size, eps=cp_config.rms_norm_eps)
     torch.testing.assert_close(norm.forward_npu(hidden_states), hidden_states + 1)
     assert len(rms_calls) == 1
     assert rms_calls[0][2] == cp_config.rms_norm_eps
 
-    rotary = common_mod._RotaryEmbedding(cp_config)
+    rotary = common_mod.CodePredictorRotaryEmbedding(cp_config)
     assert rotary.cos_cached.shape == (cp_config.num_code_groups + 1, cp_config.head_dim)
     assert rotary.sin_cached.shape == rotary.cos_cached.shape
     position_ids = torch.tensor([[0, 2, 4]])
@@ -251,7 +251,7 @@ def test_code_predictor_rotary_uses_qwen3_omni_rope_parameters(
     assert config.rope_parameters["rope_theta"] == expected_theta
     common_mod = sys.modules["vllm_omni.model_executor.models.common.qwen3_code_predictor"]
 
-    rotary = common_mod._RotaryEmbedding(config)
+    rotary = common_mod.CodePredictorRotaryEmbedding(config)
 
     expected = 1.0 / (expected_theta ** (torch.arange(0, 16, 2, dtype=torch.float32) / 16))
     torch.testing.assert_close(rotary.inv_freq, expected, rtol=0, atol=0)
@@ -282,7 +282,7 @@ def test_code_predictor_rotary_preserves_qwen3_tts_rope_theta(
         delattr(config, "rope_parameters")
     common_mod = sys.modules["vllm_omni.model_executor.models.common.qwen3_code_predictor"]
 
-    rotary = common_mod._RotaryEmbedding(config)
+    rotary = common_mod.CodePredictorRotaryEmbedding(config)
 
     expected = 1.0 / (theta ** (torch.arange(0, 16, 2, dtype=torch.float32) / 16))
     torch.testing.assert_close(rotary.inv_freq, expected, rtol=0, atol=0)
