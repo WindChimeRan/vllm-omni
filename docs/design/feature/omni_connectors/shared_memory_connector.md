@@ -10,6 +10,11 @@ auto-configured when no explicit connector is specified for an edge.
 All payloads are serialized and stored in shared memory (`/dev/shm`); the SHM
 segment name is returned in metadata.
 
+Platforms may select a storage subclass through
+`OmniPlatform.get_shared_memory_connector_cls()`. It adapts names, paths and
+byte storage; the shared connector retains locking, wakeups and cleanup.
+Read hooks return logical payload bytes, excluding any storage framing or padding.
+
 ## Configuration
 
 ```yaml
