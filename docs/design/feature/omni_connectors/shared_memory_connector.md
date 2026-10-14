@@ -7,13 +7,8 @@ auto-configured when no explicit connector is specified for an edge.
 
 ## How It Works
 
-All payloads are serialized and stored in shared memory (`/dev/shm` on Linux); the SHM
+All payloads are serialized and stored in shared memory (`/dev/shm`); the SHM
 segment name is returned in metadata.
-
-Platforms may select a storage subclass through
-`OmniPlatform.get_shared_memory_connector_cls()`. It adapts names, paths and
-byte storage; the shared connector retains locking, wakeups and cleanup.
-Read hooks return logical payload bytes, excluding any storage framing or padding.
 
 ## Configuration
 
@@ -157,10 +152,11 @@ This is the path used by the current stage-to-stage connector flow.
 Streaming receivers can address a chunk by key without its storage metadata:
 
 1. Acquire the segment's nonblocking exclusive lock.
-2. Open and read the shared-memory segment under that lock, after the writer has sized it.
+2. Open and read the segment after the writer has sized and populated it.
 3. Deserialize the bytes and return the object.
 
-If the segment does not exist or any exception occurs, the call returns `None` immediately. There is no retry loop in this path -- it is a single-attempt open.
+If the writer holds the lock or the segment is absent, the call returns `None`
+so the receiver can retry later.
 
 ### 6. Key Implementation Characteristics
 
@@ -169,11 +165,18 @@ If the segment does not exist or any exception occurs, the call returns `None` i
 `put()` writes every serialized payload to shared memory. The connector has no
 inline-payload path or size threshold.
 
-#### 6.2 Cleanup and Close
+#### 6.2 Cleanup Is Currently Passive
 
-Reads unlink consumed segments. `cleanup(key)` reclaims an unconsumed segment
-and its lock file; `close()` reclaims tracked segments and closes wakeup resources.
-Storage subclasses inherit this lifecycle.
+`cleanup()` is currently a no-op. The intended assumption is:
+
+- the consumer reads the segment
+- the underlying shared-memory helpers unlink it
+
+If the consumer never executes `get()`, the shared-memory segment may remain allocated. This means the connector relies on the normal success path for resource reclamation.
+
+#### 6.3 Close Is Currently Minimal
+
+`close()` is also a no-op. There is no connector-owned background thread, socket, or memory pool to tear down, so the lifecycle is simple. The trade-off is that `close()` does not scan or recover leaked shared-memory resources.
 
 ### 7. Data Flow in the Pipeline
 
