@@ -807,7 +807,7 @@ class CodePredictorWrapper(nn.Module):
         # Incremental decoding (opt-in): each AR step runs only its new
         # position against a static K/V buffer instead of re-prefilling the
         # whole prefix (at batch 64 the re-prefill runs 17x the positions).
-        # True retains the CUDA cache path; "eager" enables portable Torch KV reuse.
+        # Explicit "eager" mode reuses KV through native Torch without compilation.
         cache_mode = prefix_graph_cfg.get("code_predictor_kv_cache")
         self._eager_kv_cache = cache_mode == "eager"
         self._kv_cache_enabled = self._eager_kv_cache or (
@@ -886,27 +886,28 @@ class CodePredictorWrapper(nn.Module):
         self._model_dtype = next(self.model.parameters()).dtype
         self._lm_heads_list = list(self.lm_head)
         self._codec_embeds_list = list(self.model.codec_embedding)
-        # Keep the FP16 precision fallback; eager KV only bypasses the
-        # Inductor requirement.
         if self._model_dtype == torch.float16 or (
             not current_omni_platform.supports_torch_inductor() and not self._eager_kv_cache
         ):
+            # The fp16 body runs in fp32 under autocast; keep re-prefill there.
             self._kv_cache_enabled = False
 
-        # Explicit eager mode skips compilation. XPU also stays eager to avoid
-        # Torch 2.13 Dynamo double-registering handlers in spawned workers.
+        # Torch 2.13 XPU Dynamo can double-register built-in handlers when
+        # spawned workers compile this predictor. Keep this narrow path eager
+        # until the upstream XPU compiler issue is resolved.
         if (
             self._eager_kv_cache
             or current_omni_platform.is_xpu()
             or not current_omni_platform.supports_torch_inductor()
         ):
+            # NPU or other platforms without Inductor support
             self._compiled_model_fwd = self.model.forward
             if self._kv_cache_enabled:
                 self._compiled_kv_fwd = self.model.forward_cached
                 self._ensure_kv_steps(next(self.model.parameters()).device)
 
-            # NPU graph capture requires the re-prefill path.
             if current_omni_platform.is_npu() and self._wrapper_config.use_cuda_graphs and not self._eager_kv_cache:
+                # For NPU, use eager + NPU graphs (no torch.compile)
                 self._warmup_buckets()
                 self._capture_npu_graphs()
                 logger.info("code_predictor: eager mode + NPU graphs")
