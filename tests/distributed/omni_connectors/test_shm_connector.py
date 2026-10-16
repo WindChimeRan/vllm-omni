@@ -663,6 +663,7 @@ def test_reaping_keeps_consumed_records_bounded_behind_unread_keys(connector):
 
 
 def test_storage_overrides_reuse_connector_locking_and_cleanup(tmp_path, monkeypatch):
+    """Storage framing must not change the reported logical payload size."""
     from vllm_omni.platforms import current_omni_platform
 
     class ExternalStorage(SharedMemoryConnector):
@@ -672,15 +673,15 @@ def test_storage_overrides_reuse_connector_locking_and_cleanup(tmp_path, monkeyp
             return "external_" + key
 
         def _write_bytes(self, payload, name):
-            self.payload = payload
-            return {"name": name, "size": len(payload)}
+            self.payload = b"\0" + payload
+            return {"name": name, "size": len(self.payload)}
 
         def _read_bytes(self, metadata):
             # Storage must only be opened after the common reader takes the lock.
             with open(self._lock_file(metadata["name"]), "rb") as lock:
                 with pytest.raises(BlockingIOError):
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return self.payload
+            return self.payload[1:]
 
     monkeypatch.setattr(current_omni_platform, "get_shared_memory_connector_cls", lambda: ExternalStorage)
     c = make_connector({})
