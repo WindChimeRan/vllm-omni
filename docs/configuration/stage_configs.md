@@ -415,9 +415,8 @@ vllm serve Qwen/Qwen2.5-Omni-7B --omni --port 8091 --deploy-config /path/to/depl
 
 ## Qwen3-TTS with Model Runner V2
 
-On MPS, the default Qwen3-TTS profile uses eager execution and greedy decoding.
-It selects `additional_config.code_predictor_kv_cache: eager` to reuse the
-predictor cache without requiring compilation. Existing CUDA settings are unchanged.
+Set `additional_config.code_predictor_kv_cache: eager` to reuse predictor keys
+and values without `torch.compile`.
 
 Qwen3-TTS runs the native CUDA Model Runner V2 pipeline by default on vLLM
 0.29.0. MRV2 is an experimental feature for this model: the bundled default
