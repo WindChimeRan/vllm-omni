@@ -23,7 +23,7 @@ class CustomOp(nn.Module):
 
     def __new__(cls, *args: Any, **kwargs: Any) -> CustomOp:
         implementation = cls
-        if current_omni_platform.is_out_of_tree():
+        if CustomOp._oot_registry and current_omni_platform.is_out_of_tree():
             implementation = CustomOp._oot_registry.get(cls, cls)
         return super().__new__(implementation)
 
