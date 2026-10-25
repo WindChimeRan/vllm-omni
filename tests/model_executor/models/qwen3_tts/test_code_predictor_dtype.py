@@ -1476,3 +1476,85 @@ def test_tts_cached_predictor_keeps_its_own_step_dispatch(mocker: MockerFixture,
     assert step.call_count == cp_config.num_code_groups - 1
     assert codes.shape == (1, cp_config.num_code_groups)
     assert predictor._kv_buf is None
+
+
+@pytest.mark.parametrize("cache_option", [None, True])
+@pytest.mark.parametrize("xpu", [False, True])
+@torch.inference_mode()
+def test_eager_cache_reuses_positions_and_resets_frames(mocker, loaded_target_classes, cache_option, xpu):
+    """The portable cache must survive batch changes without retaining prior frames."""
+    common = sys.modules["vllm_omni.model_executor.models.common.qwen3_code_predictor"]
+    mocker.patch.object(common.current_omni_platform, "is_cuda", return_value=False)
+    mocker.patch.object(common.current_omni_platform, "is_xpu", return_value=xpu)
+    mocker.patch.object(common.current_omni_platform, "supports_torch_inductor", return_value=xpu)
+    cp_config, talker_config = _make_tiny_config(loaded_target_classes)
+    predictor_class = loaded_target_classes[2]
+    cached_config = _make_vllm_config(mocker)
+    cached_config.additional_config = {} if cache_option is None else {"code_predictor_kv_cache": cache_option}
+    reference_config = _make_vllm_config(mocker)
+    reference_config.additional_config = {"code_predictor_kv_cache": False}
+    torch.manual_seed(171)
+    cached = predictor_class(vllm_config=cached_config, config=cp_config, talker_config=talker_config).eval()
+    reference = predictor_class(vllm_config=reference_config, config=cp_config, talker_config=talker_config).eval()
+    reference.load_state_dict(cached.state_dict())
+    lengths = []
+    handle = cached.model.layers[0].self_attn.qkv_proj.register_forward_pre_hook(
+        lambda _, args: lengths.append(args[0].shape[1])
+    )
+    for batch in (1, 4, 8, 1):
+        inputs = (
+            torch.randint(cp_config.vocab_size, (batch, 1)),
+            torch.randn(batch, 1, cp_config.hidden_size),
+            torch.randn(batch, 1, cp_config.hidden_size),
+        )
+        if cached._kv_buf is not None:
+            cached._kv_buf.fill_(torch.nan)
+        lengths.clear()
+        actual = cached(*inputs, do_sample=False)
+        expected = reference(*inputs, do_sample=False)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        assert lengths == [2, 1, 1]
+    handle.remove()
+
+
+@pytest.mark.parametrize(
+    ("platform", "dtype", "option", "graphs", "cached"),
+    [
+        ("cuda", torch.bfloat16, False, True, False),
+        ("cuda", torch.bfloat16, True, True, True),
+        ("npu", torch.bfloat16, True, True, False),
+        ("npu", torch.bfloat16, None, False, True),
+        ("eager", torch.float16, True, False, False),
+        ("eager", torch.bfloat16, False, False, False),
+    ],
+)
+def test_eager_kv_preserves_fallbacks_and_graph_paths(
+    mocker, loaded_target_classes, platform, dtype, option, graphs, cached
+):
+    common = sys.modules["vllm_omni.model_executor.models.common.qwen3_code_predictor"]
+    for name, value in {
+        "is_cuda": platform == "cuda",
+        "is_npu": platform == "npu",
+        "is_xpu": False,
+        "supports_torch_inductor": platform == "cuda",
+    }.items():
+        mocker.patch.object(common.current_omni_platform, name, return_value=value)
+    cp_config, _ = _make_tiny_config(loaded_target_classes)
+    config = _make_vllm_config(mocker)
+    config.additional_config = {} if option is None else {"code_predictor_kv_cache": option}
+    predictor = common.CodePredictorWrapper(
+        vllm_config=config,
+        cp_config=cp_config,
+        wrapper_config=common.CodePredictorWrapperConfig(use_cuda_graphs=graphs),
+    ).to(dtype)
+    mocker.patch.object(predictor, "_warmup_buckets")
+    cuda = mocker.patch.object(predictor, "_capture_cuda_graphs")
+    npu = mocker.patch.object(predictor, "_capture_npu_graphs")
+    compile_model = mocker.patch.object(common.torch, "compile", side_effect=lambda fn, **kwargs: fn)
+
+    predictor._setup_compile()
+
+    assert predictor._kv_cache_enabled is cached
+    assert cuda.call_count == int(platform == "cuda" and graphs and not cached)
+    assert npu.call_count == int(platform == "npu" and graphs)
+    assert compile_model.call_count == (1 + int(cached) if platform == "cuda" else 0)

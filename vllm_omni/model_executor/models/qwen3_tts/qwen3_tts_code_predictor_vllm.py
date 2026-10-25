@@ -71,6 +71,8 @@ class Qwen3TTSTalkerCodePredictorForConditionalGenerationVLLM(CodePredictorWrapp
     def _setup_compile(self) -> None:
         if self._compiled_model_fwd is not None:
             return
+        if not current_omni_platform.is_cuda():
+            return super()._setup_compile()
         weight = next(self.model.parameters())
         supported = (
             current_omni_platform.is_cuda()

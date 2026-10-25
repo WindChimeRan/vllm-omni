@@ -720,6 +720,8 @@ class CodePredictorWrapper(nn.Module):
 
     ``code_predictor_kv_cache`` (CUDA, opt-in) switches to incremental K/V
     decoding: at large batches the re-prefill FLOPs are not negligible.
+    Eager execution without device graphs enables KV reuse by default,
+    except for FP16; set the option to false to disable it.
     """
 
     _kv_cache_enabled: bool = False
@@ -900,6 +902,15 @@ class CodePredictorWrapper(nn.Module):
                 self._capture_npu_graphs()
                 logger.info("code_predictor: eager mode + NPU graphs")
             else:
+                cache_config = self._stage_connector_extra_config(self._vllm_config)
+                self._kv_cache_enabled = (
+                    not current_omni_platform.is_cuda()
+                    and self._model_dtype != torch.float16
+                    and self._parse_bool_config(cache_config.get("code_predictor_kv_cache", True))
+                )
+                if self._kv_cache_enabled:
+                    self._compiled_kv_fwd = self.model.forward_cached
+                    self._ensure_kv_steps(next(self.model.parameters()).device)
                 logger.warning_once("code_predictor: torch.compile disabled")
             return
 
