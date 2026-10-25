@@ -53,7 +53,7 @@ class SharedMemoryConnector(OmniConnectorBase):
         return os.path.exists(f"{self.shm_directory}/{self._shm_name(key)}")
 
     def _wakeup_directory(self) -> str:
-        # Stage processes of one deployment share their launching parent.
+        # Stage engine processes of one deployment share their launching parent.
         return f"{self.shm_directory}/omni_shm_wake_{os.getuid()}_{os.getppid()}"
 
     def _lock_file(self, name: str) -> str:

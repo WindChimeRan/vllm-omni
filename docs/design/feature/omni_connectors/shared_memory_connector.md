@@ -102,7 +102,7 @@ This metadata is passed over the control plane and allows the downstream stage t
 
 #### 4.3 Locking Model
 
-To avoid races between the producer and consumer, the connector uses a lock file per transfer key. The default Linux path is:
+To avoid races between the producer and consumer, the connector uses a lock file per request. The default Linux path is:
 
 ```text
 /dev/shm/shm_{put_key}_lockfile.lock
@@ -111,7 +111,7 @@ To avoid races between the producer and consumer, the connector uses a lock file
 Locking is done with `fcntl.flock`:
 
 - producer uses `LOCK_EX`
-- consumer uses `LOCK_EX | LOCK_NB`
+- consumer uses `LOCK_EX`
 
 Both sides acquire an exclusive lock. This ensures that the shared-memory segment is not read while it is still being written and makes the handoff safer in a multi-process environment.
 
@@ -165,20 +165,18 @@ so the receiver can retry later.
 `put()` writes every serialized payload to shared memory. The connector has no
 inline-payload path or size threshold.
 
-#### 6.2 Cleanup of Tracked Payloads
+#### 6.2 Cleanup Is Currently Passive
 
-The read hook is responsible for unlinking consumed segments. The common
-reader removes the lock file after reading the payload.
-`cleanup(key)` attempts to unlink that key's segment and remove its lock file;
-`cleanup_prefix(prefix)` applies cleanup to matching tracked chunk keys.
-`reap_consumed()` removes tracking for segments consumed by another process.
+`cleanup()` is currently a no-op. The intended assumption is:
 
-#### 6.3 Close
+- the consumer reads the segment
+- the underlying shared-memory helpers unlink it
 
-`close()` calls `cleanup()` for the remaining tracked keys, then closes its
-wakeup file descriptors and removes its FIFO.
+If the consumer never executes `get()`, the shared-memory segment may remain allocated. This means the connector relies on the normal success path for resource reclamation.
 
-It does not scan for untracked segments or orphan lock files.
+#### 6.3 Close Is Currently Minimal
+
+`close()` is also a no-op. There is no connector-owned background thread, socket, or memory pool to tear down, so the lifecycle is simple. The trade-off is that `close()` does not scan or recover leaked shared-memory resources.
 
 ### 7. Data Flow in the Pipeline
 
@@ -218,6 +216,7 @@ This is a classic split-control-plane / data-plane design, but constrained to a 
 
 - Same-node only.
 - Full object serialization and deserialization are still required.
+- Resource cleanup depends on the normal consumer path.
 - Shared memory capacity is limited by host configuration.
 
 ### 9. Summary
