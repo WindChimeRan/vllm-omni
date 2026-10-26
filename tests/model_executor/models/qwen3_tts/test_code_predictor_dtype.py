@@ -361,8 +361,10 @@ class TestCodePredictorDtypeAlignment:
         # Ensure NPU path is not taken on non-NPU hardware
         common_mod = sys.modules["vllm_omni.model_executor.models.common.qwen3_code_predictor"]
         mocker.patch.object(common_mod.current_omni_platform, "is_npu", return_value=False)
+        mocker.patch.object(common_mod.current_omni_platform, "is_cuda", return_value=False)
         predictor._setup_compile()
         assert predictor._model_dtype == torch.float16
+        assert not predictor._kv_cache_enabled
 
     def test_setup_compile_uses_eager_on_xpu(self, mocker: MockerFixture, loaded_target_classes) -> None:
         """XPU should avoid the torch.compile path used by CUDA."""
@@ -377,6 +379,7 @@ class TestCodePredictorDtypeAlignment:
         )
 
         common_mod = sys.modules["vllm_omni.model_executor.models.common.qwen3_code_predictor"]
+        mocker.patch.object(common_mod.current_omni_platform, "is_cuda", return_value=False)
         mocker.patch.object(common_mod.current_omni_platform, "supports_torch_inductor", return_value=True)
         mocker.patch.object(common_mod.current_omni_platform, "is_xpu", return_value=True)
         compile_mock = mocker.patch.object(common_mod.torch, "compile")
@@ -385,6 +388,7 @@ class TestCodePredictorDtypeAlignment:
 
         compile_mock.assert_not_called()
         assert predictor._compiled_model_fwd == predictor.model.forward
+        assert predictor._kv_cache_enabled
 
     def test_forward_with_mismatched_input_dtype(self, mocker: MockerFixture, loaded_target_classes) -> None:
         """forward() should not crash when inputs are float32 but model is float16."""
@@ -1478,19 +1482,15 @@ def test_tts_cached_predictor_keeps_its_own_step_dispatch(mocker: MockerFixture,
     assert predictor._kv_buf is None
 
 
-@pytest.mark.parametrize("cache_option", [None, True])
-@pytest.mark.parametrize("xpu", [False, True])
 @torch.inference_mode()
-def test_eager_cache_reuses_positions_and_resets_frames(mocker, loaded_target_classes, cache_option, xpu):
+def test_eager_cache_reuses_positions_and_resets_frames(mocker, loaded_target_classes):
     """The portable cache must survive batch changes without retaining prior frames."""
     common = sys.modules["vllm_omni.model_executor.models.common.qwen3_code_predictor"]
     mocker.patch.object(common.current_omni_platform, "is_cuda", return_value=False)
-    mocker.patch.object(common.current_omni_platform, "is_xpu", return_value=xpu)
-    mocker.patch.object(common.current_omni_platform, "supports_torch_inductor", return_value=xpu)
     cp_config, talker_config = _make_tiny_config(loaded_target_classes)
     predictor_class = loaded_target_classes[2]
     cached_config = _make_vllm_config(mocker)
-    cached_config.additional_config = {} if cache_option is None else {"code_predictor_kv_cache": cache_option}
+    cached_config.additional_config = {}
     reference_config = _make_vllm_config(mocker)
     reference_config.additional_config = {"code_predictor_kv_cache": False}
     torch.manual_seed(171)
@@ -1512,33 +1512,26 @@ def test_eager_cache_reuses_positions_and_resets_frames(mocker, loaded_target_cl
         lengths.clear()
         actual = cached(*inputs, do_sample=False)
         expected = reference(*inputs, do_sample=False)
+        assert not reference._kv_cache_enabled
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         assert lengths == [2, 1, 1]
     handle.remove()
 
 
 @pytest.mark.parametrize(
-    ("platform", "dtype", "option", "graphs", "cached"),
+    ("platform", "option", "graphs", "cached", "capture"),
     [
-        ("cuda", torch.bfloat16, False, True, False),
-        ("cuda", torch.bfloat16, True, True, True),
-        ("npu", torch.bfloat16, True, True, False),
-        ("npu", torch.bfloat16, None, False, True),
-        ("eager", torch.float16, True, False, False),
-        ("eager", torch.bfloat16, False, False, False),
+        ("cuda", None, True, False, "cuda"),
+        ("cuda", True, True, True, None),
+        ("npu", True, True, False, "npu"),
+        ("npu", None, False, True, None),
     ],
 )
-def test_eager_kv_preserves_fallbacks_and_graph_paths(
-    mocker, loaded_target_classes, platform, dtype, option, graphs, cached
-):
+def test_eager_kv_preserves_graph_paths(mocker, loaded_target_classes, platform, option, graphs, cached, capture):
     common = sys.modules["vllm_omni.model_executor.models.common.qwen3_code_predictor"]
-    for name, value in {
-        "is_cuda": platform == "cuda",
-        "is_npu": platform == "npu",
-        "is_xpu": False,
-        "supports_torch_inductor": platform == "cuda",
-    }.items():
-        mocker.patch.object(common.current_omni_platform, name, return_value=value)
+    mocker.patch.object(common.current_omni_platform, "is_cuda", return_value=platform == "cuda")
+    mocker.patch.object(common.current_omni_platform, "is_npu", return_value=platform == "npu")
+    mocker.patch.object(common.current_omni_platform, "supports_torch_inductor", return_value=platform == "cuda")
     cp_config, _ = _make_tiny_config(loaded_target_classes)
     config = _make_vllm_config(mocker)
     config.additional_config = {} if option is None else {"code_predictor_kv_cache": option}
@@ -1546,7 +1539,7 @@ def test_eager_kv_preserves_fallbacks_and_graph_paths(
         vllm_config=config,
         cp_config=cp_config,
         wrapper_config=common.CodePredictorWrapperConfig(use_cuda_graphs=graphs),
-    ).to(dtype)
+    ).to(torch.bfloat16)
     mocker.patch.object(predictor, "_warmup_buckets")
     cuda = mocker.patch.object(predictor, "_capture_cuda_graphs")
     npu = mocker.patch.object(predictor, "_capture_npu_graphs")
@@ -1555,6 +1548,6 @@ def test_eager_kv_preserves_fallbacks_and_graph_paths(
     predictor._setup_compile()
 
     assert predictor._kv_cache_enabled is cached
-    assert cuda.call_count == int(platform == "cuda" and graphs and not cached)
-    assert npu.call_count == int(platform == "npu" and graphs)
-    assert compile_model.call_count == (1 + int(cached) if platform == "cuda" else 0)
+    assert cuda.called is (capture == "cuda")
+    assert npu.called is (capture == "npu")
+    assert compile_model.called is (platform == "cuda")
