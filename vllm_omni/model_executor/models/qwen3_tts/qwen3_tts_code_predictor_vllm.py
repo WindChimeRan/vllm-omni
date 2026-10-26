@@ -55,8 +55,8 @@ class Qwen3TTSTalkerCodePredictorForConditionalGenerationVLLM(CodePredictorWrapp
             talker_hidden_size=int(talker_config.hidden_size),
             prefix=prefix,
         )
-        # TTS owns its frame-local cache and overrides _predict_step_logits.
-        # Do not also activate the shared wrapper's Omni incremental loop.
+        # CUDA's frame-local cache keeps the shared loop disabled.
+        # Eager platforms may enable shared KV reuse in _setup_compile.
         self._kv_cache_enabled = False
         # Store talker_config for backward compat (accessed by some callers)
         self.talker_config = talker_config

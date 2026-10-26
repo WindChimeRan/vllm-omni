@@ -349,6 +349,7 @@ class TestCodePredictorDtypeAlignment:
         _, _, code_predictor_wrapper, _, _ = loaded_target_classes
         cp_config, talker_config = _make_tiny_config(loaded_target_classes)
         vllm_config = _make_vllm_config(mocker, max_num_seqs=2)
+        vllm_config.additional_config = {"code_predictor_kv_cache": True}
 
         predictor = code_predictor_wrapper(
             vllm_config=vllm_config,
@@ -388,7 +389,7 @@ class TestCodePredictorDtypeAlignment:
 
         compile_mock.assert_not_called()
         assert predictor._compiled_model_fwd == predictor.model.forward
-        assert predictor._kv_cache_enabled
+        assert not predictor._kv_cache_enabled
 
     def test_forward_with_mismatched_input_dtype(self, mocker: MockerFixture, loaded_target_classes) -> None:
         """forward() should not crash when inputs are float32 but model is float16."""
@@ -1490,7 +1491,7 @@ def test_eager_cache_reuses_positions_and_resets_frames(mocker, loaded_target_cl
     cp_config, talker_config = _make_tiny_config(loaded_target_classes)
     predictor_class = loaded_target_classes[2]
     cached_config = _make_vllm_config(mocker)
-    cached_config.additional_config = {}
+    cached_config.additional_config = {"code_predictor_kv_cache": True}
     reference_config = _make_vllm_config(mocker)
     reference_config.additional_config = {"code_predictor_kv_cache": False}
     torch.manual_seed(171)
@@ -1524,7 +1525,9 @@ def test_eager_cache_reuses_positions_and_resets_frames(mocker, loaded_target_cl
         ("cuda", None, True, False, "cuda"),
         ("cuda", True, True, True, None),
         ("npu", True, True, False, "npu"),
-        ("npu", None, False, True, None),
+        ("npu", None, False, False, None),
+        ("mps", None, False, True, None),
+        ("mps", False, False, False, None),
     ],
 )
 def test_eager_kv_preserves_graph_paths(mocker, loaded_target_classes, platform, option, graphs, cached, capture):
@@ -1540,6 +1543,10 @@ def test_eager_kv_preserves_graph_paths(mocker, loaded_target_classes, platform,
         cp_config=cp_config,
         wrapper_config=common.CodePredictorWrapperConfig(use_cuda_graphs=graphs),
     ).to(torch.bfloat16)
+    if platform == "mps":
+        weight = mocker.Mock(dtype=torch.bfloat16, device=torch.device("mps"))
+        mocker.patch.object(predictor.model, "parameters", side_effect=lambda: iter([weight]))
+        mocker.patch.object(predictor, "_ensure_kv_steps")
     mocker.patch.object(predictor, "_warmup_buckets")
     cuda = mocker.patch.object(predictor, "_capture_cuda_graphs")
     npu = mocker.patch.object(predictor, "_capture_npu_graphs")
