@@ -92,6 +92,7 @@ def _build_mock_modules(mocker: MockerFixture) -> dict[str, object]:
     return {
         "vllm_omni": mocker.MagicMock(),
         "vllm_omni.platforms": platforms_mock,
+        "vllm_omni.utils.torch_compile": mocker.MagicMock(),
         "vllm.logger": logger_mock,
         "vllm.config": mocker.MagicMock(),
         "vllm.config.vllm": vllm_config_mod,
