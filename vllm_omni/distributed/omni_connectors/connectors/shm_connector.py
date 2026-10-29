@@ -71,7 +71,7 @@ class SharedMemoryConnector(OmniConnectorBase):
         return shm_read_bytes(metadata)
 
     def _unlink_segment(self, name: str) -> None:
-        """Unlink a segment by its OS name."""
+        """Unlink a segment by its OS name; raise FileNotFoundError if absent."""
         seg = shm_pkg.SharedMemory(name=name)
         seg.close()
         seg.unlink()

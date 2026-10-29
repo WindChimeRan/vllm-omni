@@ -673,18 +673,20 @@ def test_storage_overrides_reuse_connector_locking_and_cleanup(tmp_path, monkeyp
             return "external_" + key
 
         def _write_bytes(self, payload, name):
-            self.payloads = {name: b"\0" + payload}
-            return {"name": name, "size": len(self.payloads[name])}
+            size = (tmp_path / name).write_bytes(b"\0" + payload)
+            return {"name": name, "size": size}
 
         def _read_bytes(self, metadata):
             # Storage must only be opened after the common reader takes the lock.
             with open(self._lock_file(metadata["name"]), "rb") as lock:
                 with pytest.raises(BlockingIOError):
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return self.payloads.pop(metadata["name"])[1:]
+            payload = (tmp_path / metadata["name"]).read_bytes()
+            self._unlink_segment(metadata["name"])
+            return payload[1:]
 
         def _unlink_segment(self, name):
-            self.payloads.pop(name)
+            (tmp_path / name).unlink()
 
     monkeypatch.setattr(current_omni_platform, "get_shared_memory_connector_cls", lambda: ExternalStorage)
     c = make_connector({})
@@ -699,8 +701,9 @@ def test_storage_overrides_reuse_connector_locking_and_cleanup(tmp_path, monkeyp
         key = "unread_" + uuid.uuid4().hex[:12]
         assert c.put("0", "1", key, {"value": 8})[0]
         assert c.cleanup(key)
-        assert not c.payloads
+        assert not (tmp_path / f"external_{key}").exists()
         assert not (tmp_path / f"shm_external_{key}_lockfile.lock").exists()
         assert not c._pending_keys
+        assert c.cleanup(key) is False
     finally:
         c.close()
