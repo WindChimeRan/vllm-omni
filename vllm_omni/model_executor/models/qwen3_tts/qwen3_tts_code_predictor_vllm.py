@@ -72,7 +72,12 @@ class Qwen3TTSTalkerCodePredictorForConditionalGenerationVLLM(CodePredictorWrapp
         if self._compiled_model_fwd is not None:
             return
         if not current_omni_platform.is_cuda():
-            return super()._setup_compile()
+            super()._setup_compile()
+            if self._kv_requested and not self._kv_cache_enabled:
+                logger.warning_once(
+                    "Qwen3-TTS: code_predictor_kv_cache=True is unsupported on this execution path; using re-prefill"
+                )
+            return
         weight = next(self.model.parameters())
         supported = (
             current_omni_platform.is_cuda()

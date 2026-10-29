@@ -913,6 +913,7 @@ class CodePredictorWrapper(nn.Module):
                 if self._kv_cache_enabled:
                     self._compiled_kv_fwd = self.model.forward_cached
                     self._ensure_kv_steps(device)
+                    logger.info("code_predictor: eager mode + incremental K/V decoding")
                 logger.warning_once("code_predictor: torch.compile disabled")
             return
 
