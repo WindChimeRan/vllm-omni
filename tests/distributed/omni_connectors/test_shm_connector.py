@@ -663,7 +663,7 @@ def test_reaping_keeps_consumed_records_bounded_behind_unread_keys(connector):
 
 
 def test_storage_overrides_reuse_connector_locking_and_cleanup(tmp_path, monkeypatch):
-    """Storage framing must not change the reported logical payload size."""
+    """Storage overrides preserve logical sizes and release unread payloads."""
     from vllm_omni.platforms import current_omni_platform
 
     class ExternalStorage(SharedMemoryConnector):
@@ -673,15 +673,18 @@ def test_storage_overrides_reuse_connector_locking_and_cleanup(tmp_path, monkeyp
             return "external_" + key
 
         def _write_bytes(self, payload, name):
-            self.payload = b"\0" + payload
-            return {"name": name, "size": len(self.payload)}
+            self.payloads = {name: b"\0" + payload}
+            return {"name": name, "size": len(self.payloads[name])}
 
         def _read_bytes(self, metadata):
             # Storage must only be opened after the common reader takes the lock.
             with open(self._lock_file(metadata["name"]), "rb") as lock:
                 with pytest.raises(BlockingIOError):
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return self.payload[1:]
+            return self.payloads.pop(metadata["name"])[1:]
+
+        def _unlink_segment(self, name):
+            self.payloads.pop(name)
 
     monkeypatch.setattr(current_omni_platform, "get_shared_memory_connector_cls", lambda: ExternalStorage)
     c = make_connector({})
@@ -691,6 +694,13 @@ def test_storage_overrides_reuse_connector_locking_and_cleanup(tmp_path, monkeyp
         result = c.get("0", "1", "key", metadata=metadata)
         assert result == ({"value": 7}, size)
         assert not (tmp_path / "shm_external_key_lockfile.lock").exists()
+        assert not c._pending_keys
+
+        key = "unread_" + uuid.uuid4().hex[:12]
+        assert c.put("0", "1", key, {"value": 8})[0]
+        assert c.cleanup(key)
+        assert not c.payloads
+        assert not (tmp_path / f"shm_external_{key}_lockfile.lock").exists()
         assert not c._pending_keys
     finally:
         c.close()

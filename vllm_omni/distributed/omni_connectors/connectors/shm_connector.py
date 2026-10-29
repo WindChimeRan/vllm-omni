@@ -67,6 +67,12 @@ class SharedMemoryConnector(OmniConnectorBase):
         """Read logical payload bytes and unlink under the segment lock."""
         return shm_read_bytes(metadata)
 
+    def _unlink_segment(self, name: str) -> None:
+        """Unlink a segment by its OS name."""
+        seg = shm_pkg.SharedMemory(name=name)
+        seg.close()
+        seg.unlink()
+
     def get_with_deadline(self, from_stage, to_stage, get_key, metadata=None, *, deadline):
         if time.monotonic() >= deadline:
             return None
@@ -320,9 +326,7 @@ class SharedMemoryConnector(OmniConnectorBase):
         with self._pending_keys_lock:
             self._pending_keys.pop(key, None)
             try:
-                seg = shm_pkg.SharedMemory(name=self._shm_name(key))
-                seg.close()
-                seg.unlink()
+                self._unlink_segment(self._shm_name(key))
                 logger.debug("cleanup: unlinked unconsumed SHM segment %s", key)
                 unlinked = True
             except FileNotFoundError:
