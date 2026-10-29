@@ -49,7 +49,10 @@ class SharedMemoryConnector(OmniConnectorBase):
         return key
 
     def _shm_exists(self, key: str) -> bool:
-        """Check whether a successfully published segment remains unread."""
+        """Return True while a published payload remains unread.
+
+        Override when segments are not files under ``shm_directory``.
+        """
         return os.path.exists(f"{self.shm_directory}/{self._shm_name(key)}")
 
     def _wakeup_directory(self) -> str:
